@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Codex } from "@openai/codex-sdk";
-import type { ShipPilotConfig } from "../config/schema.js";
+import type { ShipPilotConfig, ShipPilotPlatform } from "../config/schema.js";
 import type { ResolvedCase } from "../cases/resolveEnv.js";
 import type { Redactor } from "../security/redact.js";
 import { prepareCodexAuth } from "../auth/prepareCodexHome.js";
@@ -17,6 +17,15 @@ import {
   resolveXcodeBuildMcpCommand,
 } from "../ios/xcodebuildmcp.js";
 import { simulatorBridgeToolNames, startSimulatorBridge } from "../ios/simulatorBridge.js";
+import {
+  adbCommand,
+  androidProjectDir,
+  gradleCommand,
+  parseAdbDevices,
+  resolveApkPath,
+  selectAndroidDevice,
+} from "../android/adb.js";
+import { androidBridgeToolNames, startAndroidBridge } from "../android/emulatorBridge.js";
 import { buildCodexPrompt } from "./promptBuilder.js";
 import { codexOutputJsonSchema, parseCodexResult, type CodexCaseResult } from "./outputSchema.js";
 
@@ -217,7 +226,7 @@ function parseSimulatorId(output: string, simulatorName: string): string | null 
   return null;
 }
 
-export function buildCodexCliConfig(bridgeUrl: string): CodexConfigObject {
+export function buildCodexCliConfig(bridgeUrl: string, toolNames: readonly string[] = simulatorBridgeToolNames): CodexConfigObject {
   return {
     sandbox_workspace_write: { network_access: false },
     web_search: "disabled",
@@ -225,10 +234,10 @@ export function buildCodexCliConfig(bridgeUrl: string): CodexConfigObject {
       default_tools_enabled: false,
     },
     mcp_servers: {
-      shippilot_simulator: {
+      shippilot_device: {
         type: "http",
         url: bridgeUrl,
-        enabled_tools: [...simulatorBridgeToolNames],
+        enabled_tools: [...toolNames],
         default_tools_approval_mode: "approve",
         trust_level: "trusted",
       },
@@ -346,15 +355,114 @@ export function logCodexEvent(event: unknown, redactor: Redactor): void {
   }
 }
 
-export async function runCaseWithSdk(
+async function runCodexQaTurn(options: {
   config: ShipPilotConfig,
   qaCase: ResolvedCase,
   redactor: Redactor,
-  cwd = process.cwd(),
-  verbose = config.codex.verbose,
+  cwd: string,
+  verbose: boolean,
+  startedAt: string,
+  bridgeUrl: string,
+  toolNames: readonly string[],
+  runtime: { platform: ShipPilotPlatform; deviceId: string; bundleId: string },
+  closeBridge: () => Promise<void>,
+}): Promise<CaseRunRecord> {
+  const { config, qaCase, redactor, cwd, verbose, startedAt, bridgeUrl, toolNames, runtime, closeBridge } = options;
+  const preparedAuth = prepareCodexAuth(config);
+  try {
+    if (config.codex.sandbox === "danger-full-access") {
+      console.warn(
+        "[shippilot] warning: codex.sandbox is danger-full-access; workspace-write is recommended with the ShipPilot device bridge.",
+      );
+    }
+
+    const codex = new Codex({
+      apiKey: preparedAuth.apiKey,
+      env: buildCodexProcessEnv(preparedAuth.env),
+      config: buildCodexCliConfig(bridgeUrl, toolNames),
+    });
+
+    const thread = codex.startThread({
+      workingDirectory: cwd,
+      skipGitRepoCheck: true,
+      sandboxMode: config.codex.sandbox,
+      approvalPolicy: "never",
+      ...(config.codex.model === "default" ? {} : { model: config.codex.model }),
+    });
+
+    const prompt = buildCodexPrompt(config, qaCase, runtime);
+    let rawResponse: string;
+
+    if (verbose) {
+      console.log("[shippilot] Starting Codex SDK streamed run");
+      const { events } = await thread.runStreamed(prompt, {
+        outputSchema: codexOutputJsonSchema,
+      });
+      let finalResponse = "";
+      for await (const event of events) {
+        logCodexEvent(event, redactor);
+        if (
+          event.type === "item.completed" &&
+          event.item.type === "agent_message" &&
+          typeof event.item.text === "string"
+        ) {
+          finalResponse = event.item.text;
+        }
+      }
+      rawResponse = finalResponse;
+    } else {
+      const turn = await thread.run(prompt, {
+        outputSchema: codexOutputJsonSchema,
+      });
+      rawResponse = turn.finalResponse;
+    }
+
+    const rawFinalResponse = redactor.redact(rawResponse);
+    let parsed: CodexCaseResult;
+    try {
+      parsed = parseCodexResult(rawResponse);
+      parsed = JSON.parse(redactor.redact(JSON.stringify(parsed))) as CodexCaseResult;
+      parsed = collectEvidenceFiles(config, parsed, cwd);
+    } catch (error) {
+      parsed = {
+        status: "blocked",
+        case_id: qaCase.id,
+        title: qaCase.title,
+        summary: "Codex returned malformed structured output.",
+        executed_steps: [],
+        expected: qaCase.body,
+        observed: rawFinalResponse,
+        failure_reason: null,
+        blocked_reason: error instanceof Error ? error.message : "Malformed Codex output",
+        confidence: "high",
+        evidence: [],
+      };
+    }
+
+    return {
+      startedAt,
+      completedAt: new Date().toISOString(),
+      rawFinalResponse,
+      result: parsed,
+    };
+  } finally {
+    await closeBridge().catch(() => undefined);
+    preparedAuth.cleanup();
+  }
+}
+
+async function runIosCaseWithSdk(
+  config: ShipPilotConfig,
+  qaCase: ResolvedCase,
+  redactor: Redactor,
+  cwd: string,
+  verbose: boolean,
+  startedAt: string,
 ): Promise<CaseRunRecord> {
-  mkdirSync(path.resolve(cwd, config.reports.output_dir), { recursive: true });
-  const startedAt = new Date().toISOString();
+  if (!config.ios) {
+    return blockedRecord(qaCase, startedAt, "iOS is not configured.", "Missing ios config.");
+  }
+
   const xcodeBuildMcp = resolveXcodeBuildMcpCommand();
 
   const simulatorList = await runProcess(xcodeBuildMcp, ["simulator", "list"], {
@@ -500,96 +608,165 @@ export async function runCaseWithSdk(
     }
   }
 
-  const preparedAuth = prepareCodexAuth(config);
   let bridge: Awaited<ReturnType<typeof startSimulatorBridge>> | undefined;
-  try {
-    bridge = await startSimulatorBridge({
-      xcodeBuildMcp,
-      simulatorId,
-      bundleId,
-      cwd,
-      envValues: qaCase.envValues,
-      redactor,
-      verbose,
-    });
+  bridge = await startSimulatorBridge({
+    xcodeBuildMcp,
+    simulatorId,
+    bundleId,
+    cwd,
+    envValues: qaCase.envValues,
+    redactor,
+    verbose,
+  });
 
-    if (config.codex.sandbox === "danger-full-access") {
-      console.warn(
-        "[shippilot] warning: codex.sandbox is danger-full-access; workspace-write is recommended with the ShipPilot simulator bridge.",
-      );
-    }
+  return runCodexQaTurn({
+    config,
+    qaCase,
+    redactor,
+    cwd,
+    verbose,
+    startedAt,
+    bridgeUrl: bridge.url,
+    toolNames: simulatorBridgeToolNames,
+    runtime: { platform: "ios", deviceId: simulatorId, bundleId },
+    closeBridge: bridge.close,
+  });
+}
 
-    const codex = new Codex({
-      apiKey: preparedAuth.apiKey,
-      env: buildCodexProcessEnv(preparedAuth.env),
-      config: buildCodexCliConfig(bridge.url),
-    });
-
-    const thread = codex.startThread({
-      workingDirectory: cwd,
-      skipGitRepoCheck: true,
-      sandboxMode: config.codex.sandbox,
-      approvalPolicy: "never",
-      ...(config.codex.model === "default" ? {} : { model: config.codex.model }),
-    });
-
-    const prompt = buildCodexPrompt(config, qaCase, { simulatorId, bundleId });
-    let rawResponse: string;
-
-    if (verbose) {
-      console.log("[shippilot] Starting Codex SDK streamed run");
-      const { events } = await thread.runStreamed(prompt, {
-        outputSchema: codexOutputJsonSchema,
-      });
-      let finalResponse = "";
-      for await (const event of events) {
-        logCodexEvent(event, redactor);
-        if (
-          event.type === "item.completed" &&
-          event.item.type === "agent_message" &&
-          typeof event.item.text === "string"
-        ) {
-          finalResponse = event.item.text;
-        }
-      }
-      rawResponse = finalResponse;
-    } else {
-      const turn = await thread.run(prompt, {
-        outputSchema: codexOutputJsonSchema,
-      });
-      rawResponse = turn.finalResponse;
-    }
-
-    const rawFinalResponse = redactor.redact(rawResponse);
-    let parsed: CodexCaseResult;
-    try {
-      parsed = parseCodexResult(rawResponse);
-      parsed = JSON.parse(redactor.redact(JSON.stringify(parsed))) as CodexCaseResult;
-      parsed = collectEvidenceFiles(config, parsed, cwd);
-    } catch (error) {
-      parsed = {
-        status: "blocked",
-        case_id: qaCase.id,
-        title: qaCase.title,
-        summary: "Codex returned malformed structured output.",
-        executed_steps: [],
-        expected: qaCase.body,
-        observed: rawFinalResponse,
-        failure_reason: null,
-        blocked_reason: error instanceof Error ? error.message : "Malformed Codex output",
-        confidence: "high",
-        evidence: [],
-      };
-    }
-
-    return {
-      startedAt,
-      completedAt: new Date().toISOString(),
-      rawFinalResponse,
-      result: parsed,
-    };
-  } finally {
-    await bridge?.close().catch(() => undefined);
-    preparedAuth.cleanup();
+async function runAndroidCaseWithSdk(
+  config: ShipPilotConfig,
+  qaCase: ResolvedCase,
+  redactor: Redactor,
+  cwd: string,
+  verbose: boolean,
+  startedAt: string,
+): Promise<CaseRunRecord> {
+  if (!config.android) {
+    return blockedRecord(qaCase, startedAt, "Android is not configured.", "Missing android config.");
   }
+
+  const adb = adbCommand();
+  const devicesResult = await runProcess(adb, ["devices"], {
+    cwd,
+    env: process.env,
+    verbose,
+    redactor,
+    timeoutMs: 60 * 1000,
+  });
+  const device = selectAndroidDevice(parseAdbDevices(combinedOutput(devicesResult)), config.android.emulator);
+  if (devicesResult.status !== 0 || !device) {
+    const detail = redactor.redact(
+      devicesResult.timedOut
+        ? "Timed out while resolving the Android emulator."
+        : combinedOutput(devicesResult) || "Could not find an online Android emulator.",
+    );
+    return blockedRecord(qaCase, startedAt, "The Android emulator could not be resolved.", detail);
+  }
+
+  let apkPath = resolveApkPath(config, cwd);
+  if (!apkPath) {
+    const projectDir = androidProjectDir(config, cwd);
+    const build = await runProcess(gradleCommand(projectDir), [config.android.gradle_task], {
+      cwd: projectDir,
+      env: process.env,
+      verbose,
+      redactor,
+      timeoutMs: 20 * 60 * 1000,
+    });
+    if (build.status !== 0) {
+      const detail = redactor.redact(
+        build.timedOut ? "Timed out while building the Android app." : combinedOutput(build) || "Unknown build error",
+      );
+      return blockedRecord(qaCase, startedAt, "The Android app could not be built before QA execution.", detail);
+    }
+    apkPath = resolveApkPath(config, cwd);
+  }
+
+  if (!apkPath) {
+    return blockedRecord(qaCase, startedAt, "The Android APK could not be resolved.", "Could not find a debug APK.");
+  }
+
+  const install = await runProcess(adb, ["-s", device.serial, "install", "-r", apkPath], {
+    cwd,
+    env: process.env,
+    verbose,
+    redactor,
+    timeoutMs: 5 * 60 * 1000,
+  });
+  if (install.status !== 0) {
+    const detail = redactor.redact(
+      install.timedOut ? "Timed out while installing the Android app." : combinedOutput(install) || "Unknown install error",
+    );
+    return blockedRecord(qaCase, startedAt, "The Android app could not be installed before QA execution.", detail);
+  }
+
+  const stop = await runProcess(adb, ["-s", device.serial, "shell", "am", "force-stop", config.android.package_id], {
+    cwd,
+    env: process.env,
+    verbose,
+    redactor,
+    timeoutMs: 60 * 1000,
+  });
+  if (stop.status !== 0 && verbose) {
+    console.warn(redactor.redact(`[shippilot] Android force-stop warning: ${combinedOutput(stop)}`));
+  }
+
+  const launchArgs = config.android.launch_activity
+    ? ["-s", device.serial, "shell", "am", "start", "-n", `${config.android.package_id}/${config.android.launch_activity}`]
+    : ["-s", device.serial, "shell", "monkey", "-p", config.android.package_id, "1"];
+  const launch = await runProcess(adb, launchArgs, {
+    cwd,
+    env: process.env,
+    verbose,
+    redactor,
+    timeoutMs: 2 * 60 * 1000,
+  });
+  if (launch.status !== 0) {
+    const detail = redactor.redact(
+      launch.timedOut ? "Timed out while launching the Android app." : combinedOutput(launch) || "Unknown launch error",
+    );
+    return blockedRecord(qaCase, startedAt, "The Android app could not be launched before QA execution.", detail);
+  }
+
+  const bridge = await startAndroidBridge({
+    adb,
+    serial: device.serial,
+    packageId: config.android.package_id,
+    launchActivity: config.android.launch_activity,
+    cwd,
+    outputDir: path.resolve(cwd, config.reports.output_dir, "screenshots"),
+    envValues: qaCase.envValues,
+    redactor,
+    verbose,
+  });
+
+  return runCodexQaTurn({
+    config,
+    qaCase,
+    redactor,
+    cwd,
+    verbose,
+    startedAt,
+    bridgeUrl: bridge.url,
+    toolNames: androidBridgeToolNames,
+    runtime: { platform: "android", deviceId: device.serial, bundleId: config.android.package_id },
+    closeBridge: bridge.close,
+  });
+}
+
+export async function runCaseWithSdk(
+  config: ShipPilotConfig,
+  qaCase: ResolvedCase,
+  redactor: Redactor,
+  cwd = process.cwd(),
+  verbose = config.codex.verbose,
+  platform: ShipPilotPlatform = config.android && !config.ios ? "android" : "ios",
+): Promise<CaseRunRecord> {
+  mkdirSync(path.resolve(cwd, config.reports.output_dir), { recursive: true });
+  const startedAt = new Date().toISOString();
+
+  if (platform === "android") {
+    return runAndroidCaseWithSdk(config, qaCase, redactor, cwd, verbose, startedAt);
+  }
+  return runIosCaseWithSdk(config, qaCase, redactor, cwd, verbose, startedAt);
 }

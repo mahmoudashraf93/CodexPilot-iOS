@@ -22,6 +22,7 @@ import {
   simulatorBridgeToolInputSchemas,
   simulatorBridgeToolNames,
 } from "../src/ios/simulatorBridge.js";
+import { parseAdbDevices, selectAndroidDevice } from "../src/android/adb.js";
 import { renderMarkdownReport } from "../src/reports/markdownReport.js";
 import { renderJunitReport } from "../src/reports/junitReport.js";
 import type { RunReport } from "../src/reports/jsonReport.js";
@@ -112,23 +113,24 @@ Enter \${TEST_EMAIL}.
 
     const qaCase = resolveCaseEnv(parseCase(casePath), { TEST_EMAIL: "user@example.com" });
     const prompt = buildCodexPrompt(baseConfig, qaCase, {
-      simulatorId: "11111111-1111-1111-1111-111111111111",
+      platform: "ios",
+      deviceId: "11111111-1111-1111-1111-111111111111",
       bundleId: "com.example.App",
     });
 
-    expect(prompt).toContain("shippilot_simulator MCP tools");
+    expect(prompt).toContain("shippilot_device MCP tools");
     expect(prompt).toContain("type_env");
     expect(prompt).not.toContain("xcodebuildmcp");
     expect(prompt).not.toContain("user@example.com");
   });
 
-  it("disables default tools and exposes only the ShipPilot simulator MCP tools", () => {
+  it("disables default tools and exposes only the ShipPilot device MCP tools", () => {
     expect(buildCodexCliConfig("http://127.0.0.1:1234/mcp")).toEqual({
       sandbox_workspace_write: { network_access: false },
       web_search: "disabled",
       tools: { default_tools_enabled: false },
       mcp_servers: {
-        shippilot_simulator: {
+        shippilot_device: {
           type: "http",
           url: "http://127.0.0.1:1234/mcp",
           enabled_tools: [...simulatorBridgeToolNames],
@@ -242,6 +244,27 @@ describe("simulator setup", () => {
 
   it("treats launch timeouts after install as recoverable", () => {
     expect(launchTimeoutWarning()).toMatch(/use the launch_app tool if needed/);
+  });
+});
+
+describe("Android setup", () => {
+  it("allows Android-only config", () => {
+    const config = configSchema.parse({
+      android: { package_id: "com.example.app.debug" },
+    });
+
+    expect(config.android?.backend).toBe("adb");
+    expect(config.android?.gradle_task).toBe(":app:assembleDebug");
+  });
+
+  it("parses and selects online Android devices", () => {
+    const devices = parseAdbDevices(`List of devices attached
+emulator-5554	device
+offline-1	offline
+`);
+
+    expect(selectAndroidDevice(devices, null)?.serial).toBe("emulator-5554");
+    expect(selectAndroidDevice(devices, "5554")?.serial).toBe("emulator-5554");
   });
 });
 

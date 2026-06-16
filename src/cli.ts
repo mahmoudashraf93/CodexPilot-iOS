@@ -10,7 +10,10 @@ import { resolveCaseEnv } from "./cases/resolveEnv.js";
 import { createRedactor } from "./security/redact.js";
 import { assertTrustedRunnerForSecrets } from "./security/trustedRunner.js";
 import { doctorXcode } from "./ios/doctorXcode.js";
+import { doctorAndroid } from "./android/adb.js";
 import { runCaseWithSdk } from "./codex/runWithSdk.js";
+import type { QaCase } from "./cases/parseCase.js";
+import type { ShipPilotConfig, ShipPilotPlatform } from "./config/schema.js";
 import { writeJsonReport, readJsonReport, type RunReport } from "./reports/jsonReport.js";
 import { writeMarkdownReport } from "./reports/markdownReport.js";
 import { writeJunitReport } from "./reports/junitReport.js";
@@ -26,6 +29,22 @@ import {
 type GlobalOptions = {
   config?: string;
 };
+
+function parsePlatform(value: string): ShipPilotPlatform | "all" {
+  if (value === "ios" || value === "android" || value === "all") return value;
+  throw new Error("--platform must be ios, android, or all.");
+}
+
+function configuredPlatforms(config: ShipPilotConfig, requested: ShipPilotPlatform | "all"): ShipPilotPlatform[] {
+  const available: ShipPilotPlatform[] = [];
+  if (config.ios) available.push("ios");
+  if (config.android) available.push("android");
+  return requested === "all" ? available : available.filter((platform) => platform === requested);
+}
+
+function caseSupportsPlatform(qaCase: QaCase, platform: ShipPilotPlatform): boolean {
+  return qaCase.platforms.length === 0 || qaCase.platforms.includes(platform);
+}
 
 function writeReports(configPath: string | undefined, report: RunReport): void {
   const config = loadConfig(configPath);
@@ -193,40 +212,54 @@ shippilot run --case qa/login.md
     console.log("Created shippilot.yml, qa/login.md, and CI templates.");
   });
 
-  program.command("doctor").description("Validate config, auth, Xcode, XcodeBuildMCP, and project inputs").action(() => {
-    const options = program.opts<GlobalOptions>();
-    try {
-      const config = loadConfig(options.config);
-      const authIssues = validateAuthConfig(config);
-      for (const issue of authIssues) printCheck("auth", false, issue);
+  program
+    .command("doctor")
+    .description("Validate config, auth, platform tooling, and project inputs")
+    .option("--platform <platform>", "platform to validate: ios, android, or all", "all")
+    .action((doctorOptions: { platform: string }) => {
+      const options = program.opts<GlobalOptions>();
+      try {
+        const config = loadConfig(options.config);
+        const requested = parsePlatform(doctorOptions.platform);
+        const platforms = configuredPlatforms(config, requested);
+        if (platforms.length === 0) throw new Error(`No configured platforms match ${requested}.`);
 
-      const checks = doctorXcode(config);
-      for (const check of checks) printCheck(check.name, check.ok, check.detail);
+        const authIssues = validateAuthConfig(config);
+        for (const issue of authIssues) printCheck("auth", false, issue);
 
-      if (authIssues.length > 0 || checks.some((check) => !check.ok)) {
+        const checks = platforms.flatMap((platform) =>
+          platform === "ios" ? doctorXcode(config) : doctorAndroid(config),
+        );
+        for (const check of checks) printCheck(check.name, check.ok, check.detail);
+
+        if (authIssues.length > 0 || checks.some((check) => !check.ok)) {
+          process.exitCode = ExitCodes.setupError;
+          return;
+        }
+
+        printCheck("ShipPilot doctor", true, "ready");
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = ExitCodes.setupError;
-        return;
       }
-
-      printCheck("ShipPilot doctor", true, "ready");
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = ExitCodes.setupError;
-    }
-  });
+    });
 
   program
     .command("run")
     .description("Run one or more ShipPilot QA cases")
     .option("--case <path>", "single QA case Markdown file")
     .option("--cases <glob>", "QA case glob or directory")
+    .option("--platform <platform>", "platform to run: ios, android, or all", "all")
     .option("--verbose", "stream XcodeBuildMCP and Codex SDK events")
-    .action(async (runOptions: { case?: string; cases?: string; verbose?: boolean }) => {
+    .action(async (runOptions: { case?: string; cases?: string; platform: string; verbose?: boolean }) => {
       const options = program.opts<GlobalOptions>();
       const startedAt = new Date().toISOString();
 
       try {
         const config = loadConfig(options.config);
+        const requested = parsePlatform(runOptions.platform);
+        const platforms = configuredPlatforms(config, requested);
+        if (platforms.length === 0) throw new Error(`No configured platforms match ${requested}.`);
         const authIssues = validateAuthConfig(config);
         if (authIssues.length > 0) throw new Error(authIssues.join("\n"));
 
@@ -239,17 +272,30 @@ shippilot run --case qa/login.md
         const records = [];
         for (const casePath of casePaths) {
           const qaCase = parseCase(casePath);
+          const casePlatforms = platforms.filter((platform) => caseSupportsPlatform(qaCase, platform));
+          if (casePlatforms.length === 0) continue;
           const resolved = resolveCaseEnv(qaCase);
           assertTrustedRunnerForSecrets({
             config,
             hasCaseSecrets: Object.values(resolved.envValues).some((value) => value.length > 0),
           });
           const redactor = createRedactor(Object.values(resolved.envValues));
-          console.log(`Running ${qaCase.id}: ${qaCase.title}`);
-          records.push(
-            await runCaseWithSdk(config, resolved, redactor, process.cwd(), runOptions.verbose ?? config.codex.verbose),
-          );
+          for (const platform of casePlatforms) {
+            console.log(`Running ${qaCase.id} [${platform}]: ${qaCase.title}`);
+            records.push(
+              await runCaseWithSdk(
+                config,
+                resolved,
+                redactor,
+                process.cwd(),
+                runOptions.verbose ?? config.codex.verbose,
+                platform,
+              ),
+            );
+          }
         }
+
+        if (records.length === 0) throw new Error("No QA cases matched the selected platform.");
 
         const report = writeJsonReport(config, records, startedAt);
         if (config.reports.markdown) writeMarkdownReport(config, report);

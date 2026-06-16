@@ -8,6 +8,7 @@ const qaCaseFrontMatterSchema = z.object({
   title: z.string().min(1),
   required_env: z.array(z.string().min(1)).default([]),
   tags: z.array(z.string()).default([]),
+  platforms: z.array(z.enum(["ios", "android"])).default([]),
 });
 
 export type QaCase = z.infer<typeof qaCaseFrontMatterSchema> & {

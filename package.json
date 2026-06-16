@@ -32,6 +32,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "dependencies": {
