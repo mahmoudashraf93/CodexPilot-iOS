@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z, type ZodRawShape } from "zod";
 import type { Redactor } from "../security/redact.js";
+import { androidLaunchComponent } from "./adb.js";
 
 export const androidBridgeToolNames = [
   "snapshot_ui",
@@ -109,10 +110,26 @@ function delay(seconds?: number): Promise<void> {
   return seconds ? new Promise((resolve) => setTimeout(resolve, seconds * 1000)) : Promise.resolve();
 }
 
+export function encodeAndroidInputText(text: string): string {
+  const encoded = text.replace(/\s/g, "%s");
+  return `'${encoded.replace(/'/g, `'\\''`)}'`;
+}
+
+export function formatAndroidBridgeCommandForLog(command: string, args: string[]): string {
+  const sanitizedArgs = [...args];
+  const inputTextIndex = sanitizedArgs.findIndex(
+    (arg, index) => arg === "shell" && sanitizedArgs[index + 1] === "input" && sanitizedArgs[index + 2] === "text",
+  );
+  if (inputTextIndex !== -1 && inputTextIndex + 3 < sanitizedArgs.length) {
+    sanitizedArgs.splice(inputTextIndex + 3, sanitizedArgs.length - inputTextIndex - 3, "[REDACTED_INPUT]");
+  }
+  return [command, ...sanitizedArgs].join(" ");
+}
+
 function runBridgeProcess(command: string, args: string[], context: AndroidBridgeContext): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     if (context.verbose) {
-      console.log(context.redactor.redact(`[shippilot:android-bridge] $ ${[command, ...args].join(" ")}`));
+      console.log(context.redactor.redact(`[shippilot:android-bridge] $ ${formatAndroidBridgeCommandForLog(command, args)}`));
     }
 
     const child = spawn(command, args, {
@@ -234,10 +251,6 @@ function findTapTarget(xml: string, input: Record<string, unknown>): { x: number
   return center;
 }
 
-function escapeInputText(text: string): string {
-  return text.replace(/%/g, "%25").replace(/\s/g, "%s").replace(/'/g, "\\'");
-}
-
 async function runAdbShell(context: AndroidBridgeContext, shellArgs: string[]): Promise<string> {
   const result = await runBridgeProcess(context.adb, adbArgs(context, ["shell", ...shellArgs]), context);
   if (result.status !== 0) {
@@ -266,6 +279,7 @@ async function executeBridgeTool(
       const result = spawnSync(context.adb, adbArgs(context, ["exec-out", "screencap", "-p"]), {
         cwd: context.cwd,
         encoding: "buffer",
+        timeout: 60 * 1000,
       });
       if (result.status !== 0) {
         throw new Error(`screenshot failed: ${result.stderr?.toString("utf8") || "No output."}`);
@@ -283,7 +297,7 @@ async function executeBridgeTool(
     }
 
     case "type_text": {
-      await runAdbShell(context, ["input", "text", escapeInputText(requireString(input.text, "text"))]);
+      await runAdbShell(context, ["input", "text", encodeAndroidInputText(requireString(input.text, "text"))]);
       return textResult("Typed text into the emulator.");
     }
 
@@ -292,7 +306,7 @@ async function executeBridgeTool(
       if (!Object.prototype.hasOwnProperty.call(context.envValues, name)) {
         throw new Error(`Environment variable ${name} is not declared in this QA case.`);
       }
-      await runAdbShell(context, ["input", "text", escapeInputText(context.envValues[name])]);
+      await runAdbShell(context, ["input", "text", encodeAndroidInputText(context.envValues[name])]);
       return textResult(`Typed environment value ${name} into the emulator.`);
     }
 
@@ -317,9 +331,7 @@ async function executeBridgeTool(
 
     case "launch_app": {
       if (context.launchActivity) {
-        const component = context.launchActivity.includes("/")
-          ? context.launchActivity
-          : `${context.packageId}/${context.launchActivity}`;
+        const component = androidLaunchComponent(context.packageId, context.launchActivity);
         return textResult((await runAdbShell(context, ["am", "start", "-n", component])) || "Launched app.");
       }
       const result = await runBridgeProcess(context.adb, adbArgs(context, ["shell", "monkey", "-p", context.packageId, "1"]), context);
@@ -419,4 +431,3 @@ export async function startAndroidBridge(context: AndroidBridgeContext): Promise
     close: () => new Promise<void>((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve()))),
   };
 }
-

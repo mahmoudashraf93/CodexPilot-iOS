@@ -19,6 +19,7 @@ import {
 import { simulatorBridgeToolNames, startSimulatorBridge } from "../ios/simulatorBridge.js";
 import {
   adbCommand,
+  androidLaunchComponent,
   androidProjectDir,
   gradleCommand,
   parseAdbDevices,
@@ -30,6 +31,7 @@ import { buildCodexPrompt } from "./promptBuilder.js";
 import { codexOutputJsonSchema, parseCodexResult, type CodexCaseResult } from "./outputSchema.js";
 
 export type CaseRunRecord = {
+  platform: ShipPilotPlatform;
   result: CodexCaseResult;
   rawFinalResponse: string;
   startedAt: string;
@@ -124,10 +126,12 @@ export function launchTimeoutWarning(): string {
 function blockedRecord(
   qaCase: ResolvedCase,
   startedAt: string,
+  platform: ShipPilotPlatform,
   summary: string,
   observed: string,
 ): CaseRunRecord {
   return {
+    platform,
     startedAt,
     completedAt: new Date().toISOString(),
     rawFinalResponse: "",
@@ -183,7 +187,12 @@ function sanitizeFilePart(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "case";
 }
 
-function collectEvidenceFiles(config: ShipPilotConfig, parsed: CodexCaseResult, cwd: string): CodexCaseResult {
+function collectEvidenceFiles(
+  config: ShipPilotConfig,
+  parsed: CodexCaseResult,
+  cwd: string,
+  platform: ShipPilotPlatform,
+): CodexCaseResult {
   if (!config.reports.screenshots) return parsed;
 
   const screenshotsDir = path.resolve(cwd, config.reports.output_dir, "screenshots");
@@ -193,9 +202,9 @@ function collectEvidenceFiles(config: ShipPilotConfig, parsed: CodexCaseResult, 
     if (!path.isAbsolute(item) || !existsSync(item)) return item;
 
     const extension = path.extname(item) || ".png";
-    const fileName = `${sanitizeFilePart(parsed.case_id)}-${index + 1}${extension}`;
+    const fileName = `${platform}-${sanitizeFilePart(parsed.case_id)}-${index + 1}${extension}`;
     const destination = path.join(screenshotsDir, fileName);
-    copyFileSync(item, destination);
+    if (path.resolve(item) !== destination) copyFileSync(item, destination);
     return path.relative(cwd, destination);
   });
 
@@ -368,8 +377,10 @@ async function runCodexQaTurn(options: {
   closeBridge: () => Promise<void>,
 }): Promise<CaseRunRecord> {
   const { config, qaCase, redactor, cwd, verbose, startedAt, bridgeUrl, toolNames, runtime, closeBridge } = options;
-  const preparedAuth = prepareCodexAuth(config);
+  let cleanupAuth = (): void => undefined;
   try {
+    const preparedAuth = prepareCodexAuth(config);
+    cleanupAuth = preparedAuth.cleanup;
     if (config.codex.sandbox === "danger-full-access") {
       console.warn(
         "[shippilot] warning: codex.sandbox is danger-full-access; workspace-write is recommended with the ShipPilot device bridge.",
@@ -422,7 +433,7 @@ async function runCodexQaTurn(options: {
     try {
       parsed = parseCodexResult(rawResponse);
       parsed = JSON.parse(redactor.redact(JSON.stringify(parsed))) as CodexCaseResult;
-      parsed = collectEvidenceFiles(config, parsed, cwd);
+      parsed = collectEvidenceFiles(config, parsed, cwd, runtime.platform);
     } catch (error) {
       parsed = {
         status: "blocked",
@@ -440,6 +451,7 @@ async function runCodexQaTurn(options: {
     }
 
     return {
+      platform: runtime.platform,
       startedAt,
       completedAt: new Date().toISOString(),
       rawFinalResponse,
@@ -447,7 +459,7 @@ async function runCodexQaTurn(options: {
     };
   } finally {
     await closeBridge().catch(() => undefined);
-    preparedAuth.cleanup();
+    cleanupAuth();
   }
 }
 
@@ -460,7 +472,7 @@ async function runIosCaseWithSdk(
   startedAt: string,
 ): Promise<CaseRunRecord> {
   if (!config.ios) {
-    return blockedRecord(qaCase, startedAt, "iOS is not configured.", "Missing ios config.");
+    return blockedRecord(qaCase, startedAt, "ios", "iOS is not configured.", "Missing ios config.");
   }
 
   const xcodeBuildMcp = resolveXcodeBuildMcpCommand();
@@ -479,7 +491,7 @@ async function runIosCaseWithSdk(
         ? "Timed out while resolving the simulator id."
         : combinedOutput(simulatorList) || `Could not find simulator named ${config.ios.simulator}.`,
     );
-    return blockedRecord(qaCase, startedAt, "The simulator id could not be resolved.", detail);
+    return blockedRecord(qaCase, startedAt, "ios", "The simulator id could not be resolved.", detail);
   }
 
   const boot = await runProcess(xcodeBuildMcp, bootArgs(config, simulatorId), {
@@ -493,7 +505,7 @@ async function runIosCaseWithSdk(
     const detail = redactor.redact(
       boot.timedOut ? "Timed out while booting the simulator." : combinedOutput(boot) || "Unknown simulator boot error",
     );
-    return blockedRecord(qaCase, startedAt, "The simulator could not be booted before QA execution.", detail);
+    return blockedRecord(qaCase, startedAt, "ios", "The simulator could not be booted before QA execution.", detail);
   }
   if (boot.status !== 0 && isSimulatorAlreadyBooted(boot) && verbose) {
     console.log("[shippilot] simulator is already booted; continuing.");
@@ -522,7 +534,7 @@ async function runIosCaseWithSdk(
     const detail = redactor.redact(
       build.timedOut ? "Timed out while building the app." : combinedOutput(build) || "Unknown build error",
     );
-    return blockedRecord(qaCase, startedAt, "The app could not be built before QA execution.", detail);
+    return blockedRecord(qaCase, startedAt, "ios", "The app could not be built before QA execution.", detail);
   }
 
   const appPathResult = await runProcess(xcodeBuildMcp, getAppPathArgs(config, simulatorId), {
@@ -539,7 +551,7 @@ async function runIosCaseWithSdk(
         ? "Timed out while resolving the app path."
         : combinedOutput(appPathResult) || "Could not parse app path.",
     );
-    return blockedRecord(qaCase, startedAt, "The built app path could not be resolved.", detail);
+    return blockedRecord(qaCase, startedAt, "ios", "The built app path could not be resolved.", detail);
   }
 
   const install = await runProcess(xcodeBuildMcp, installArgs(config, appPath, simulatorId), {
@@ -553,7 +565,7 @@ async function runIosCaseWithSdk(
     const detail = redactor.redact(
       install.timedOut ? "Timed out while installing the app." : combinedOutput(install) || "Unknown install error",
     );
-    return blockedRecord(qaCase, startedAt, "The app could not be installed before QA execution.", detail);
+    return blockedRecord(qaCase, startedAt, "ios", "The app could not be installed before QA execution.", detail);
   }
 
   let bundleId = config.ios.bundle_id ?? null;
@@ -572,7 +584,7 @@ async function runIosCaseWithSdk(
           ? "Timed out while resolving the bundle id."
           : combinedOutput(bundle) || "Could not parse bundle id.",
       );
-      return blockedRecord(qaCase, startedAt, "The app bundle id could not be resolved.", detail);
+      return blockedRecord(qaCase, startedAt, "ios", "The app bundle id could not be resolved.", detail);
     }
   }
 
@@ -600,11 +612,11 @@ async function runIosCaseWithSdk(
         const fallbackDetail = redactor.redact(
           combinedOutput(fallbackLaunch) || combinedOutput(launch) || "Unknown launch error",
         );
-        return blockedRecord(qaCase, startedAt, "The app could not be launched before QA execution.", fallbackDetail);
+        return blockedRecord(qaCase, startedAt, "ios", "The app could not be launched before QA execution.", fallbackDetail);
       }
     } else {
       const detail = redactor.redact(combinedOutput(launch) || "Unknown launch error");
-      return blockedRecord(qaCase, startedAt, "The app could not be launched before QA execution.", detail);
+      return blockedRecord(qaCase, startedAt, "ios", "The app could not be launched before QA execution.", detail);
     }
   }
 
@@ -642,7 +654,7 @@ async function runAndroidCaseWithSdk(
   startedAt: string,
 ): Promise<CaseRunRecord> {
   if (!config.android) {
-    return blockedRecord(qaCase, startedAt, "Android is not configured.", "Missing android config.");
+    return blockedRecord(qaCase, startedAt, "android", "Android is not configured.", "Missing android config.");
   }
 
   const adb = adbCommand();
@@ -660,12 +672,14 @@ async function runAndroidCaseWithSdk(
         ? "Timed out while resolving the Android emulator."
         : combinedOutput(devicesResult) || "Could not find an online Android emulator.",
     );
-    return blockedRecord(qaCase, startedAt, "The Android emulator could not be resolved.", detail);
+    return blockedRecord(qaCase, startedAt, "android", "The Android emulator could not be resolved.", detail);
   }
 
-  let apkPath = resolveApkPath(config, cwd);
-  if (!apkPath) {
-    const projectDir = androidProjectDir(config, cwd);
+  const projectDir = androidProjectDir(config, cwd);
+  let apkPath: string | null = null;
+  if (config.android.apk_path) {
+    apkPath = resolveApkPath(config, cwd);
+  } else {
     const build = await runProcess(gradleCommand(projectDir), [config.android.gradle_task], {
       cwd: projectDir,
       env: process.env,
@@ -677,13 +691,19 @@ async function runAndroidCaseWithSdk(
       const detail = redactor.redact(
         build.timedOut ? "Timed out while building the Android app." : combinedOutput(build) || "Unknown build error",
       );
-      return blockedRecord(qaCase, startedAt, "The Android app could not be built before QA execution.", detail);
+      return blockedRecord(qaCase, startedAt, "android", "The Android app could not be built before QA execution.", detail);
     }
     apkPath = resolveApkPath(config, cwd);
   }
 
   if (!apkPath) {
-    return blockedRecord(qaCase, startedAt, "The Android APK could not be resolved.", "Could not find a debug APK.");
+    return blockedRecord(
+      qaCase,
+      startedAt,
+      "android",
+      "The Android APK could not be resolved.",
+      "Could not find a debug APK.",
+    );
   }
 
   const install = await runProcess(adb, ["-s", device.serial, "install", "-r", apkPath], {
@@ -697,7 +717,7 @@ async function runAndroidCaseWithSdk(
     const detail = redactor.redact(
       install.timedOut ? "Timed out while installing the Android app." : combinedOutput(install) || "Unknown install error",
     );
-    return blockedRecord(qaCase, startedAt, "The Android app could not be installed before QA execution.", detail);
+    return blockedRecord(qaCase, startedAt, "android", "The Android app could not be installed before QA execution.", detail);
   }
 
   const stop = await runProcess(adb, ["-s", device.serial, "shell", "am", "force-stop", config.android.package_id], {
@@ -712,7 +732,15 @@ async function runAndroidCaseWithSdk(
   }
 
   const launchArgs = config.android.launch_activity
-    ? ["-s", device.serial, "shell", "am", "start", "-n", `${config.android.package_id}/${config.android.launch_activity}`]
+    ? [
+        "-s",
+        device.serial,
+        "shell",
+        "am",
+        "start",
+        "-n",
+        androidLaunchComponent(config.android.package_id, config.android.launch_activity),
+      ]
     : ["-s", device.serial, "shell", "monkey", "-p", config.android.package_id, "1"];
   const launch = await runProcess(adb, launchArgs, {
     cwd,
@@ -725,7 +753,7 @@ async function runAndroidCaseWithSdk(
     const detail = redactor.redact(
       launch.timedOut ? "Timed out while launching the Android app." : combinedOutput(launch) || "Unknown launch error",
     );
-    return blockedRecord(qaCase, startedAt, "The Android app could not be launched before QA execution.", detail);
+    return blockedRecord(qaCase, startedAt, "android", "The Android app could not be launched before QA execution.", detail);
   }
 
   const bridge = await startAndroidBridge({

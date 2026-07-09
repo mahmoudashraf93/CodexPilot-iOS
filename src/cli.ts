@@ -99,7 +99,7 @@ async function main(): Promise<void> {
 
   program
     .name("shippilot")
-    .description("ShipPilot: agentic iOS QA runner for Codex")
+    .description("ShipPilot: agentic mobile QA runner for Codex")
     .version("0.1.1")
     .option("-c, --config <path>", "config file path", "shippilot.yml");
 
@@ -250,7 +250,7 @@ shippilot run --case qa/login.md
     .option("--case <path>", "single QA case Markdown file")
     .option("--cases <glob>", "QA case glob or directory")
     .option("--platform <platform>", "platform to run: ios, android, or all", "all")
-    .option("--verbose", "stream XcodeBuildMCP and Codex SDK events")
+    .option("--verbose", "stream platform setup and Codex SDK events")
     .action(async (runOptions: { case?: string; cases?: string; platform: string; verbose?: boolean }) => {
       const options = program.opts<GlobalOptions>();
       const startedAt = new Date().toISOString();

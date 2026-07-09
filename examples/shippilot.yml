@@ -15,6 +15,17 @@ ios:
   backend: xcodebuildmcp
   configuration: Debug
 
+# Configure android instead of ios, or configure both. When both are present,
+# unscoped QA cases run on both unless --platform selects one.
+# android:
+#   project: .
+#   gradle_task: :app:assembleDebug
+#   apk_path:
+#   package_id: com.example.myapp
+#   emulator: emulator-5554
+#   backend: adb
+#   launch_activity: .MainActivity
+
 reports:
   output_dir: .shippilot
   markdown: true

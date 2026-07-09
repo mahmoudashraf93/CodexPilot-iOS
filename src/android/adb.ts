@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { ShipPilotConfig } from "../config/schema.js";
@@ -19,6 +20,10 @@ export function gradleCommand(projectDir: string): string {
 export function androidProjectDir(config: ShipPilotConfig, cwd = process.cwd()): string {
   if (!config.android) throw new Error("Android config is required.");
   return path.resolve(cwd, config.android.project);
+}
+
+export function androidLaunchComponent(packageId: string, launchActivity: string): string {
+  return launchActivity.includes("/") ? launchActivity : `${packageId}/${launchActivity}`;
 }
 
 export function parseAdbDevices(output: string): AndroidDevice[] {
@@ -84,9 +89,31 @@ export function doctorAndroid(config: ShipPilotConfig, cwd = process.cwd()): Che
       ok: existsSync(gradlew),
       detail: gradlew,
     });
+  } else {
+    const apkPath = path.resolve(cwd, config.android.apk_path);
+    checks.push({
+      name: "Android APK",
+      ok: existsSync(apkPath),
+      detail: apkPath,
+    });
   }
 
-  checks.push(runCommand(adbCommand(), ["devices"], cwd, "adb devices"));
+  const devicesResult = spawnSync(adbCommand(), ["devices"], { cwd, encoding: "utf8" });
+  const devicesOutput = [devicesResult.stdout, devicesResult.stderr].filter(Boolean).join("\n").trim();
+  const selectedDevice =
+    devicesResult.status === 0
+      ? selectAndroidDevice(parseAdbDevices(devicesResult.stdout ?? ""), config.android.emulator)
+      : null;
+  const missingDeviceDetail =
+    devicesOutput ||
+    devicesResult.error?.message ||
+    (config.android.emulator
+      ? `No online emulator matched ${config.android.emulator}.`
+      : "No online Android emulator found.");
+  checks.push({
+    name: "Android emulator",
+    ok: devicesResult.status === 0 && selectedDevice !== null,
+    detail: selectedDevice?.serial ?? missingDeviceDetail,
+  });
   return checks;
 }
-

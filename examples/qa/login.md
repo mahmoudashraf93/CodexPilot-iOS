@@ -7,6 +7,9 @@ required_env:
 tags:
   - release
   - smoke
+platforms:
+  - ios
+  - android
 ---
 
 Launch the app.

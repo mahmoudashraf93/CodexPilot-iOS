@@ -22,7 +22,8 @@ import {
   simulatorBridgeToolInputSchemas,
   simulatorBridgeToolNames,
 } from "../src/ios/simulatorBridge.js";
-import { parseAdbDevices, selectAndroidDevice } from "../src/android/adb.js";
+import { androidLaunchComponent, parseAdbDevices, selectAndroidDevice } from "../src/android/adb.js";
+import { encodeAndroidInputText, formatAndroidBridgeCommandForLog } from "../src/android/emulatorBridge.js";
 import { renderMarkdownReport } from "../src/reports/markdownReport.js";
 import { renderJunitReport } from "../src/reports/junitReport.js";
 import type { RunReport } from "../src/reports/jsonReport.js";
@@ -266,6 +267,35 @@ offline-1	offline
     expect(selectAndroidDevice(devices, null)?.serial).toBe("emulator-5554");
     expect(selectAndroidDevice(devices, "5554")?.serial).toBe("emulator-5554");
   });
+
+  it("formats launch activities consistently", () => {
+    expect(androidLaunchComponent("com.example.app", ".MainActivity")).toBe("com.example.app/.MainActivity");
+    expect(androidLaunchComponent("com.example.app", "com.example.app.MainActivity")).toBe(
+      "com.example.app/com.example.app.MainActivity",
+    );
+    expect(androidLaunchComponent("com.example.app", "com.other/.MainActivity")).toBe("com.other/.MainActivity");
+  });
+
+  it("hides Android input text payloads from verbose bridge command logs", () => {
+    const command = formatAndroidBridgeCommandForLog("adb", [
+      "-s",
+      "emulator-5554",
+      "shell",
+      "input",
+      "text",
+      "abc%sdef",
+    ]);
+
+    expect(command).toBe("adb -s emulator-5554 shell input text [REDACTED_INPUT]");
+    expect(command).not.toContain("abc%sdef");
+  });
+
+  it("shell-quotes Android input text before sending it through adb shell", () => {
+    const encoded = encodeAndroidInputText("hello'; touch /sdcard/pwn; echo 'world");
+
+    expect(encoded).toBe("'hello'\\'';%stouch%s/sdcard/pwn;%secho%s'\\''world'");
+    expect(encoded).not.toContain("'; touch");
+  });
 });
 
 describe("QA cases", () => {
@@ -362,10 +392,12 @@ describe("redaction", () => {
       status: "failed",
       started_at: "",
       completed_at: "",
-      cases: [{ startedAt: "", completedAt: "", rawFinalResponse: "", result: redactedResult }],
+      cases: [{ platform: "android", startedAt: "", completedAt: "", rawFinalResponse: "", result: redactedResult }],
     };
     const output = [JSON.stringify(report), renderMarkdownReport(report), renderJunitReport(report)].join("\n");
 
+    expect(output).toContain("[android]");
+    expect(output).toContain('classname="ShipPilot.android"');
     for (const transformed of transformedSecrets(secret)) {
       expect(output).not.toContain(transformed);
     }
@@ -467,6 +499,7 @@ describe("report status", () => {
     expect(
       summarizeStatus([
         {
+          platform: "ios",
           startedAt: "",
           completedAt: "",
           rawFinalResponse: "",
@@ -485,6 +518,7 @@ describe("report status", () => {
           },
         },
         {
+          platform: "android",
           startedAt: "",
           completedAt: "",
           rawFinalResponse: "",
