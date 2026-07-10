@@ -2,7 +2,7 @@
 
 All notable changes to ShipPilot will be documented in this file.
 
-## Unreleased
+## 0.2.0 - 2026-07-10
 
 ### Added
 
@@ -13,6 +13,7 @@ All notable changes to ShipPilot will be documented in this file.
 
 - Added the platform to JSON, Markdown, and JUnit case reporting and platform-prefixed screenshot evidence names.
 - Expanded setup, CI, security, and contribution documentation for Android.
+- Updated transitive dependencies to patched versions with no known npm audit findings.
 
 ## 0.1.1 - 2026-06-02
 
