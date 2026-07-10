@@ -1,6 +1,6 @@
 # GitHub Actions
 
-Use macOS runners because iOS simulator testing requires Xcode. ShipPilot bundles XcodeBuildMCP through its npm dependencies, so workflows do not install it separately.
+Use a macOS runner for iOS because simulator testing requires Xcode. ShipPilot bundles XcodeBuildMCP through its npm dependencies, so workflows do not install it separately.
 
 ```yaml
 name: ShipPilot QA
@@ -31,8 +31,8 @@ jobs:
           TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
           TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
         run: |
-          npx shippilot doctor
-          npx shippilot run --case qa/login.md
+          npx shippilot doctor --platform ios
+          npx shippilot run --case qa/login.md --platform ios
 
       - name: Upload ShipPilot report
         if: always()
@@ -43,3 +43,17 @@ jobs:
 ```
 
 For open-source projects, prefer `workflow_dispatch`, releases, schedules, or maintainer-approved labels. ShipPilot blocks secret-backed GitHub fork PR runs by default; set `SHIPPILOT_ALLOW_UNTRUSTED_SECRETS=true` only after confirming the runner is trusted.
+
+For Android, use a runner with the Android SDK and hardware acceleration, then provision and boot the emulator before the ShipPilot commands:
+
+```yaml
+- name: Run ShipPilot
+  env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  run: |
+    adb devices
+    npx shippilot doctor --platform android
+    npx shippilot run --cases qa/ --platform android
+```
+
+The emulator setup is runner-specific and is intentionally separate from ShipPilot. See [Android setup](android.md) for configuration and APK discovery.

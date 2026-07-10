@@ -29,7 +29,8 @@ export function renderJunitReport(report: RunReport): string {
                 result.observed,
               )}</error>`
             : "";
-      return `    <testcase classname="ShipPilot" name="${name}">${body}</testcase>`;
+      const classname = entry.platform ? `ShipPilot.${entry.platform}` : "ShipPilot";
+      return `    <testcase classname="${classname}" name="${name}">${body}</testcase>`;
     })
     .join("\n");
 

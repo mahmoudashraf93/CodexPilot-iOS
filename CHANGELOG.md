@@ -2,6 +2,18 @@
 
 All notable changes to ShipPilot will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- Added Android emulator QA support through `adb`, including Gradle or prebuilt APK installation, UI automation, screenshots, and platform-aware QA cases.
+- Added `--platform ios|android|all` to `doctor` and `run`.
+
+### Changed
+
+- Added the platform to JSON, Markdown, and JUnit case reporting and platform-prefixed screenshot evidence names.
+- Expanded setup, CI, security, and contribution documentation for Android.
+
 ## 0.1.1 - 2026-06-02
 
 ### Added

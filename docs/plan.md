@@ -1,6 +1,6 @@
 # ShipPilot Full Project Plan
 
-ShipPilot is an SDK-first agentic iOS QA runner. Teams write Markdown QA cases, configure an iOS project and simulator, choose a Codex auth mode, and run the tool from GitHub Actions, Bitrise, or local CI. Codex drives the app through an iOS simulator, verifies expected outcomes, captures screenshot evidence when available, writes reports, and fails CI when a case fails.
+ShipPilot is an SDK-first agentic mobile QA runner. Teams write Markdown QA cases, configure an iOS project, an Android project, or both, choose a Codex auth mode, and run the tool from GitHub Actions, Bitrise, or local CI. Codex drives the app through an iOS simulator or Android emulator, verifies expected outcomes, captures screenshot evidence when available, writes reports, and fails CI when a case fails.
 
 ## Core Design
 
@@ -9,6 +9,7 @@ ShipPilot is an SDK-first agentic iOS QA runner. Teams write Markdown QA cases, 
 - GitHub repo: `mahmoudashraf93/ShipPilot`.
 - Primary engine: `@openai/codex-sdk`.
 - iOS automation backend: XcodeBuildMCP CLI.
+- Android automation backend: Android SDK `adb` with the project Gradle wrapper or a prebuilt APK.
 - v1 is test-and-report only: no edits, commits, patches, pushes, or PR creation.
 - `codex app-server` is reserved for future advanced integrations.
 
@@ -17,7 +18,9 @@ ShipPilot is an SDK-first agentic iOS QA runner. Teams write Markdown QA cases, 
 ```bash
 npx shippilot init
 npx shippilot doctor
+npx shippilot doctor --platform android
 npx shippilot run --case qa/login.md
+npx shippilot run --cases qa/ --platform android
 npx shippilot run --cases qa/
 npx shippilot report --run .shippilot/run.json
 ```
@@ -32,14 +35,14 @@ npx shippilot report --run .shippilot/run.json
 
 - `passed` exits `0`.
 - `failed` exits `1`.
-- setup/auth/config/simulator errors exit `2`.
+- setup/auth/config/device errors exit `2`.
 - `blocked` exits `3`.
 
 `codex.fail_on: never` enables report-only mode.
 
 `codex.verbose: true` or `shippilot run --verbose` streams build output and Codex SDK events for CI debugging. It shows reasoning summaries and tool activity, not private chain-of-thought.
 
-For simulator UI automation, ShipPilot keeps Codex in `workspace-write` by default and exposes simulator actions through a ShipPilot-controlled MCP bridge. The parent ShipPilot process still communicates with XcodeBuildMCP/CoreSimulator for setup and the allowlisted bridge tools.
+For device UI automation, ShipPilot keeps Codex in `workspace-write` by default and exposes simulator or emulator actions through a ShipPilot-controlled MCP bridge. The parent ShipPilot process still communicates with XcodeBuildMCP/CoreSimulator or `adb` for setup and the allowlisted bridge tools.
 
 ## Milestones
 
@@ -53,3 +56,4 @@ For simulator UI automation, ShipPilot keeps Codex in `workspace-write` by defau
 8. Add GitHub Actions and Bitrise examples.
 9. Add sample iOS app and smoke cases.
 10. Publish initial npm package as `shippilot`.
+11. Add Android emulator QA support with platform-aware cases and reports.

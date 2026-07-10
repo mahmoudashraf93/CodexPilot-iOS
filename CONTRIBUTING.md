@@ -11,6 +11,7 @@ Prerequisites:
 - Node.js 20 or newer.
 - npm.
 - macOS with Xcode for iOS simulator flows.
+- The Android SDK, `adb`, and a booted emulator for Android flows.
 
 Install dependencies:
 
@@ -39,12 +40,12 @@ Before opening a pull request:
 - Keep changes scoped to one behavior or documentation improvement.
 - Add or update tests for parser, config, report, or redaction behavior.
 - Update docs and examples when CLI behavior changes.
-- Do not commit `dist/`, `.shippilot/`, `.codex/`, local secrets, simulator output, or package tarballs.
+- Do not commit `dist/`, `.shippilot/`, `.codex/`, local secrets, device output, or package tarballs.
 
 Useful areas to improve:
 
 - Config validation and clearer doctor checks.
 - QA case parsing and secret redaction.
 - Report quality and artifact collection.
-- XcodeBuildMCP integration robustness.
+- XcodeBuildMCP and Android `adb` integration robustness.
 - CI examples for common hosted runners.

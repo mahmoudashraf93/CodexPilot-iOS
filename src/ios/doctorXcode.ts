@@ -4,6 +4,7 @@ import type { ShipPilotConfig } from "../config/schema.js";
 import { resolveXcodeBuildMcpCommand, runCommand, type CheckResult } from "./xcodebuildmcp.js";
 
 export function doctorXcode(config: ShipPilotConfig, cwd = process.cwd()): CheckResult[] {
+  if (!config.ios) return [];
   const projectPath = config.ios.project ?? config.ios.workspace;
   let xcodeBuildMcp: string | null = null;
   let xcodeBuildMcpResolution: CheckResult | null = null;

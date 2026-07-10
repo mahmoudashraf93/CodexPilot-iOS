@@ -24,7 +24,7 @@ export function renderMarkdownReport(report: RunReport): string {
   for (const entry of report.cases) {
     const result = entry.result;
     lines.push(
-      `### ${statusIcon(result.status)} ${result.case_id}: ${result.title}`,
+      `### ${statusIcon(result.status)} [${entry.platform ?? "unknown"}] ${result.case_id}: ${result.title}`,
       "",
       result.summary,
       "",

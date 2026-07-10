@@ -26,8 +26,8 @@ jobs:
           TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
           TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
         run: |
-          npx shippilot doctor
-          npx shippilot run --case qa/login.md
+          npx shippilot doctor --platform ios
+          npx shippilot run --case qa/login.md --platform ios
 
       - name: Upload ShipPilot report
         if: always()

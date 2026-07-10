@@ -2,5 +2,5 @@
 set -euo pipefail
 
 npm install -g shippilot
-shippilot doctor
-shippilot run --case qa/login.md
+shippilot doctor --platform ios
+shippilot run --case qa/login.md --platform ios

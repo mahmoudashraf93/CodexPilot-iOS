@@ -52,6 +52,7 @@ export function runCommand(command: string, args: string[], cwd = process.cwd(),
 }
 
 function addProjectOrWorkspace(args: string[], config: ShipPilotConfig): string[] {
+  if (!config.ios) throw new Error("iOS config is required.");
   if (config.ios.project) {
     args.push("--project-path", config.ios.project);
   } else if (config.ios.workspace) {
@@ -62,6 +63,7 @@ function addProjectOrWorkspace(args: string[], config: ShipPilotConfig): string[
 }
 
 function addSimulator(args: string[], config: ShipPilotConfig, simulatorId?: string): string[] {
+  if (!config.ios) throw new Error("iOS config is required.");
   if (simulatorId) {
     args.push("--simulator-id", simulatorId);
   } else {
@@ -71,6 +73,7 @@ function addSimulator(args: string[], config: ShipPilotConfig, simulatorId?: str
 }
 
 export function buildArgs(config: ShipPilotConfig, simulatorId?: string): string[] {
+  if (!config.ios) throw new Error("iOS config is required.");
   return addProjectOrWorkspace(
     addSimulator(
       [
@@ -93,6 +96,7 @@ export function bootArgs(config: ShipPilotConfig, simulatorId?: string): string[
 }
 
 export function getAppPathArgs(config: ShipPilotConfig, simulatorId?: string): string[] {
+  if (!config.ios) throw new Error("iOS config is required.");
   return addProjectOrWorkspace(
     addSimulator(
       [
@@ -125,6 +129,7 @@ export function launchArgs(config: ShipPilotConfig, bundleId: string, simulatorI
 }
 
 export function projectFileExists(config: ShipPilotConfig, cwd = process.cwd()): boolean {
+  if (!config.ios) return false;
   const projectPath = config.ios.project ?? config.ios.workspace;
   return Boolean(projectPath && path.resolve(cwd, projectPath));
 }
